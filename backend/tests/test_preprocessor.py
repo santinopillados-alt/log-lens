@@ -37,6 +37,15 @@ SAMPLE_LOGS_ALL_ERRORS = """\
 2024-01-15 10:00:03 ERROR payment-service — Rollback failed
 """
 
+SAMPLE_LOGS_UNICODE = """\
+2024-01-15 10:00:01 ERROR api-gateway — Fallo de conexión: tïméöüt
+2024-01-15 10:00:02 INFO  api-gateway — Reinténtando conexión
+"""
+
+SAMPLE_LOGS_SINGLE_LINE = """\
+2024-01-15 10:00:01 ERROR svc — Solo una línea
+"""
+
 
 # ── Stats tests ───────────────────────────────────────────────────────────────
 
@@ -50,13 +59,12 @@ def test_stats_counts_levels_correctly():
 
 def test_stats_error_rate_calculation():
     stats = compute_stats(SAMPLE_LOGS_MIXED)
-    # 3 errors / 7 total = 42.86%
     assert abs(stats.error_rate_percent - 42.86) < 0.1
 
 
 def test_stats_extracts_trace_ids():
     stats = compute_stats(SAMPLE_LOGS_MIXED)
-    assert stats.unique_trace_ids == 1  # abc-123 appears multiple times but deduped
+    assert stats.unique_trace_ids == 1
 
 
 def test_stats_no_errors_returns_zero_error_rate():
@@ -74,46 +82,66 @@ def test_stats_all_errors():
 def test_stats_extracts_top_error_messages():
     stats = compute_stats(SAMPLE_LOGS_MIXED)
     assert len(stats.top_error_messages) > 0
-    # Error messages should be non-empty strings
     for msg in stats.top_error_messages:
         assert len(msg) > 5
 
 
 def test_stats_computes_time_range():
     stats = compute_stats(SAMPLE_LOGS_MIXED)
-    # Logs span from 10:00:01 to 10:00:05 = 4 seconds
     assert stats.time_range_seconds == pytest.approx(4.0, abs=1.0)
 
 
-def test_stats_no_time_range_for_single_timestamp():
+def test_stats_same_timestamp_two_lines():
+    """Dos líneas con el mismo timestamp — time range debe ser 0."""
     single = "2024-01-15 10:00:01 ERROR svc — Something failed"
     stats = compute_stats(single + "\n" + single)
-    # Two lines, same timestamp — range is 0 or very small
     assert stats.time_range_seconds is not None
     assert stats.time_range_seconds == pytest.approx(0.0, abs=1.0)
+
+
+def test_stats_handles_unicode_characters():
+    """Logs con caracteres especiales no deben romper el preprocessor."""
+    stats = compute_stats(SAMPLE_LOGS_UNICODE)
+    assert stats.total_lines == 2
+    assert stats.error_count == 1
+
+
+def test_stats_warning_count_zero_when_no_warnings():
+    stats = compute_stats(SAMPLE_LOGS_ALL_INFO)
+    assert stats.warning_count == 0
+
+
+def test_stats_critical_counted_as_error():
+    """CRITICAL debe sumarse al error_count."""
+    stats = compute_stats(SAMPLE_LOGS_ALL_ERRORS)
+    assert stats.error_count >= 2
 
 
 # ── AI context tests ──────────────────────────────────────────────────────────
 
 def test_ai_context_respects_line_budget():
-    # Generate 200 log lines
     big_log = "\n".join(
-        [f"2024-01-15 10:00:0{i%10} INFO svc — Line {i}" for i in range(200)]
+        [f"2024-01-15 10:00:0{i % 10} INFO svc — Line {i}" for i in range(200)]
         + [f"2024-01-15 10:00:01 ERROR svc — Failed on line {i}" for i in range(20)]
     )
     stats = compute_stats(big_log)
     context = build_ai_context(big_log, stats, max_sample_lines=40)
     sample_section = context.split("=== LOG SAMPLE")[1]
-    sample_lines = [l for l in sample_section.splitlines() if l.strip() and "===" not in l]
+    sample_lines = [
+        line for line in sample_section.splitlines()
+        if line.strip() and "===" not in line
+    ]
     assert len(sample_lines) <= 40
 
 
 def test_ai_context_prioritizes_error_lines():
     stats = compute_stats(SAMPLE_LOGS_MIXED)
     context = build_ai_context(SAMPLE_LOGS_MIXED, stats, max_sample_lines=10)
-    # All 3 error lines should appear in the sample
     assert "ERROR" in context
-    error_lines = [l for l in context.splitlines() if "ERROR" in l]
+    error_lines = [
+        line for line in context.splitlines()
+        if "ERROR" in line
+    ]
     assert len(error_lines) >= 3
 
 
@@ -123,6 +151,20 @@ def test_ai_context_includes_stats_section():
     assert "LOG STATISTICS" in context
     assert "Error rate:" in context
     assert str(stats.total_lines) in context
+
+
+def test_ai_context_not_empty():
+    """El contexto generado nunca debe ser vacío."""
+    stats = compute_stats(SAMPLE_LOGS_MIXED)
+    context = build_ai_context(SAMPLE_LOGS_MIXED, stats)
+    assert context.strip() != ""
+
+
+def test_ai_context_contains_log_sample_header():
+    """El contexto debe incluir el header de sample para que el parser no falle."""
+    stats = compute_stats(SAMPLE_LOGS_MIXED)
+    context = build_ai_context(SAMPLE_LOGS_MIXED, stats)
+    assert "=== LOG SAMPLE" in context
 
 
 # ── Fallback severity tests ───────────────────────────────────────────────────
@@ -174,3 +216,12 @@ def test_valid_submission_passes():
         service_name="my-service",
     )
     assert sub.service_name == "my-service"
+
+
+def test_valid_submission_without_service_name():
+    """service_name es opcional — no debe fallar si no se pasa."""
+    from app.models.schemas import LogSubmission
+    sub = LogSubmission(
+        content="2024-01-15 10:00:01 ERROR svc — Failed\n2024-01-15 10:00:02 INFO svc — OK",
+    )
+    assert sub.content is not None
