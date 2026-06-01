@@ -151,7 +151,7 @@ async def get_history(
 
 async def get_analysis_by_id(analysis_id: str) -> Optional[dict]:
     """Retrieve full analysis result from DB."""
-    import json
+    
 
     pool = get_pool()
     async with pool.acquire() as conn:
