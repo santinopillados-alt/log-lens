@@ -35,7 +35,7 @@ LEVEL_PATTERNS = [
 
 TRACE_PATTERN = re.compile(
     r"(?:trace[_-]?id|traceid|request[_-]?id|req[_-]?id|correlation[_-]?id)"
-    r'[=:\s"]+([a-f0-9\-]{8,})',
+    r'[=:\s"]+([a-f0-9\-]{6,})',
     re.IGNORECASE,
 )
 
