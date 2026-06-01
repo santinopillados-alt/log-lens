@@ -17,8 +17,7 @@ would reject ~40% of real-world logs. Regex is more forgiving, at the
 cost of occasional misclassification — acceptable for an analysis tool.
 """
 import re
-import uuid
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -81,7 +80,6 @@ def _extract_error_message(line: str) -> Optional[str]:
     match = ERROR_MESSAGE_PATTERN.search(line)
     if match:
         msg = match.group(1).strip().rstrip(".,;")
-        # Normalize UUIDs and numbers to reduce cardinality
         msg = re.sub(r"[a-f0-9]{8}-[a-f0-9\-]{23,}", "<uuid>", msg)
         msg = re.sub(r"\b\d{4,}\b", "<id>", msg)
         return msg
@@ -93,7 +91,7 @@ def compute_stats(raw_content: str) -> LogStats:
     Parse raw log content and return statistical summary.
     This runs entirely in Python — no AI call, no network.
     """
-    lines = [l for l in raw_content.splitlines() if l.strip()]
+    lines = [line for line in raw_content.splitlines() if line.strip()]
 
     level_counts: Counter = Counter()
     trace_ids: set = set()
@@ -123,7 +121,6 @@ def compute_stats(raw_content: str) -> LogStats:
     info_count = level_counts["info"]
     error_rate = round((error_count / total * 100) if total > 0 else 0.0, 2)
 
-    # Top 5 most common error messages (deduplicated)
     top_errors = [msg for msg, _ in Counter(error_messages).most_common(5)]
 
     time_range: Optional[float] = None
@@ -150,16 +147,14 @@ def build_ai_context(raw_content: str, stats: LogStats, max_sample_lines: int = 
     The sample prioritizes ERROR/CRITICAL lines, then includes surrounding
     context lines for each error to preserve trace coherence.
     """
-    lines = [l for l in raw_content.splitlines() if l.strip()]
+    lines = [line for line in raw_content.splitlines() if line.strip()]
 
-    # Collect error line indices + 2 lines of context around each
     error_indices: set[int] = set()
     for i, line in enumerate(lines):
         if _extract_level(line) in ("error", "critical"):
             for j in range(max(0, i - 1), min(len(lines), i + 3)):
                 error_indices.add(j)
 
-    # If we have room, fill with the last N lines (tail is most relevant)
     sample_indices = sorted(error_indices)
     if len(sample_indices) < max_sample_lines:
         tail_start = max(0, len(lines) - (max_sample_lines - len(sample_indices)))
